@@ -871,6 +871,8 @@ def inner_page_style() -> str:
 def render_diseases(df_mcq: pd.DataFrame) -> None:
     """疾病列表页：根据当前系统展示疾病列表。内页标题与正文使用内联白字。"""
     st.markdown(inner_page_style(), unsafe_allow_html=True)
+    # 调试：确认是否进入疾病列表页以及当前系统
+    st.write(f"【调试】进入疾病列表页，当前系统：{st.session_state.get('current_system')}")
     st.markdown('<h1 style="color: white !important;">临床启明星</h1>', unsafe_allow_html=True)
 
     if st.button("返回首页"):
