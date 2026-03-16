@@ -836,6 +836,34 @@ def inner_page_style() -> str:
     div[data-testid="column"] .stMarkdown {
         margin-bottom: 0.3rem !important;
     }
+    /* 提高按钮可点击区域（移动端优化） */
+    .stButton button {
+        min-height: 44px;
+        min-width: 44px;
+        padding: 10px 15px;
+        font-size: 16px !important;
+        cursor: pointer;
+        -webkit-tap-highlight-color: rgba(0,0,0,0.1);
+    }
+    /* 触摸反馈 */
+    .stButton button:active {
+        opacity: 0.7;
+        transform: scale(0.98);
+    }
+    /* 确保按钮容器不被遮挡 */
+    .stButton {
+        z-index: 10;
+        position: relative;
+    }
+    /* 禁用任何可能遮挡点击的父容器（若有自定义卡片） */
+    .stApp [data-testid="stVerticalBlock"] {
+        pointer-events: auto !important;
+    }
+    /* 针对首页系统卡片（如果用了自定义 div），确保按钮可点 */
+    .system-card .stButton button {
+        width: 100%;
+        margin-top: 5px;
+    }
 </style>
 """
 
