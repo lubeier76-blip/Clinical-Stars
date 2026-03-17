@@ -8,6 +8,9 @@ import streamlit as st
 import requests
 import json
 
+# DeepSeek API（复用现有调用；避免在多个函数里重复写 Key）
+DEEPSEEK_API_KEY = "sk-cfd82383a0e645119e37bb9a05200883"
+
 
 @st.cache_data
 def load_mcq_bank(path: str) -> pd.DataFrame:
@@ -110,7 +113,7 @@ def load_teaching_outlines(path: str) -> pd.DataFrame:
 
 def call_ai_patient(messages, profile):
     """使用 DeepSeek API 生成 AI 患者回复"""
-    api_key = "sk-cfd82383a0e645119e37bb9a05200883"  # 你的 DeepSeek API Key
+    api_key = DEEPSEEK_API_KEY
 
     # 从病人设定中安全获取字段
     def get_field(name: str) -> str:
@@ -187,7 +190,7 @@ def call_guide_assistant(
     - situation: 当前情境编号 (1/2/3/4)
     - student_level: "初级" 或 "高级"
     """
-    api_key = "sk-cfd82383a0e645119e37bb9a05200883"
+    api_key = DEEPSEEK_API_KEY
 
     def get_field(name: str) -> str:
         if name in patient_profile.index:
@@ -282,7 +285,7 @@ def call_medstar(
     - student_level: "初级" 或 "高级"
     返回医小星的回复字符串，教学完成时可在末尾加 [DONE] 标记。
     """
-    api_key = "sk-cfd82383a0e645119e37bb9a05200883"
+    api_key = DEEPSEEK_API_KEY
 
     profile = context.get("profile")
     situation = context.get("situation", 1)
@@ -423,6 +426,57 @@ def call_medstar(
         return f"【医小星暂时无法回答，错误：{str(e)}】"
 
 
+def call_general_ai(user_message: str, history: list[dict[str, str]] | None = None) -> str:
+    """调用 DeepSeek API 回答通用医学问题（不带病例上下文）。"""
+    api_key = DEEPSEEK_API_KEY
+    if not api_key:
+        return "【医小星暂时无法回答：未配置 DeepSeek API Key】"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    system_msg = {
+        "role": "system",
+        "content": "你是一位医学教育助手，名叫医小星，亲切可爱，用通俗易懂的语言回答医学问题。"
+        "如果涉及严重症状或紧急情况，请提醒用户及时就医或拨打急救电话。"
+        "不要编造诊断；给出可操作的科普与就医建议。",
+    }
+    messages = [system_msg]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_message})
+
+    payload = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 500,
+    }
+
+    # 获取代理设置（从环境变量）
+    proxies = None
+    http_proxy = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    https_proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if http_proxy or https_proxy:
+        proxies = {"http": http_proxy, "https": https_proxy}
+
+    try:
+        response = requests.post(
+            "https://api.deepseek.com/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30,
+            proxies=proxies,
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"【医小星暂时无法回答，错误：{str(e)}】"
+
+
 def init_session_state() -> None:
     """初始化全局 session_state，用于页面导航和学习状态管理。"""
     if "current_page" not in st.session_state:
@@ -474,6 +528,15 @@ def init_session_state() -> None:
         st.session_state.last_guided_message = ""  # 上次引导对应的患者消息
     if "scene_narrator" not in st.session_state:
         st.session_state.scene_narrator = pd.DataFrame()
+
+    # 通用智能问答（悬浮球入口）
+    if "general_chat_mode" not in st.session_state:
+        st.session_state.general_chat_mode = False
+    if "general_messages" not in st.session_state:
+        st.session_state.general_messages = []
+    if "general_chat_prev" not in st.session_state:
+        # 记录进入通用问答前的页面状态，便于返回
+        st.session_state.general_chat_prev = {}
 
 
 def go_home():
@@ -566,6 +629,12 @@ SYSTEM_BG_MAP = {
     "骨科": "guke",
 }
 
+# ==================== 医小星图片配置 ====================
+# [修改] 使用医小星图片 yixiaoxingemoji3.png（data/images/yixiaoxingemoji3.png）
+MEDSTAR_ICON_FILENAME = "yixiaoxingemoji3.png"  # 图片文件名（必须放在 data/images/ 下）
+MEDSTAR_ICON_SIZE = 50  # 图标显示尺寸（像素）
+# =======================================================
+
 
 def _inject_page_background(base_dir: str, page: str, system: str | None) -> None:
     """
@@ -592,12 +661,36 @@ def _inject_page_background(base_dir: str, page: str, system: str | None) -> Non
     if page == "home":
         bg_css = try_load_b64(home_bg) or gradient_css
     else:
-        # 内页：优先系统背景 data/backgrounds/{拼音}.jpg 或 .png，再回退首页背景、渐变
+        # [修改] 内页：按页面类型选择背景图文件夹
+        # - diseases：只从 data/backgrounds/ 加载
+        # - learn/simulation/report：优先 data/background2/，不存在则回退 data/backgrounds/
         name = (system or "").strip()
         stem = SYSTEM_BG_MAP.get(name, "")
-        jpg_path = os.path.join(data_dir, "backgrounds", f"{stem}.jpg") if stem else ""
-        png_path = os.path.join(data_dir, "backgrounds", f"{stem}.png") if stem else ""
-        bg_css = try_load_b64(jpg_path) or try_load_b64(png_path) or try_load_b64(home_bg) or gradient_css
+
+        if page == "diseases":
+            jpg_path = os.path.join(data_dir, "backgrounds", f"{stem}.jpg") if stem else ""
+            png_path = os.path.join(data_dir, "backgrounds", f"{stem}.png") if stem else ""
+            bg_css = (
+                try_load_b64(jpg_path)
+                or try_load_b64(png_path)
+                or try_load_b64(home_bg)
+                or gradient_css
+            )
+        elif page in ("learn", "simulation", "report"):
+            jpg2_path = os.path.join(data_dir, "background2", f"{stem}.jpg") if stem else ""
+            png2_path = os.path.join(data_dir, "background2", f"{stem}.png") if stem else ""
+            jpg1_path = os.path.join(data_dir, "backgrounds", f"{stem}.jpg") if stem else ""
+            png1_path = os.path.join(data_dir, "backgrounds", f"{stem}.png") if stem else ""
+            bg_css = (
+                try_load_b64(jpg2_path)
+                or try_load_b64(png2_path)
+                or try_load_b64(jpg1_path)
+                or try_load_b64(png1_path)
+                or try_load_b64(home_bg)
+                or gradient_css
+            )
+        else:
+            bg_css = try_load_b64(home_bg) or gradient_css
 
     st.markdown(
         f"""
@@ -662,6 +755,117 @@ def _inject_page_background(base_dir: str, page: str, system: str | None) -> Non
         """,
         unsafe_allow_html=True,
     )
+
+
+def inject_floating_icon(base_dir: str) -> None:
+    """
+    [修改] 右下角悬浮元素（仅首页）：左侧医小星图片 + 右侧「和我聊聊天吧」按钮。
+    使用紧凑列方案：固定定位 + width: fit-content + 列宽自适应 + 去除列间距 + 背景贴合内容。
+    """
+    # 只在首页显示，且在非引导/非通用问答模式
+    if st.session_state.get("current_page") != "home":
+        return
+    if st.session_state.get("general_chat_mode", False) or st.session_state.get(
+        "guide_mode", False
+    ):
+        return
+
+    # 加载医小星图片（若失败则回退 emoji）
+    img_path = os.path.join(base_dir, "data", "images", MEDSTAR_ICON_FILENAME)
+    img_base64 = _load_image_base64(img_path)
+
+    placeholder = st.empty()
+    with placeholder.container():
+        st.markdown(
+            f"""
+            <style>
+            .compact-floating-container {{
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                z-index: 99999;
+                background-color: #4f8bf9;
+                border-radius: 40px;
+                padding: 4px 6px 4px 4px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                width: fit-content;
+                display: flex;
+                align-items: center;
+                gap: 0;
+            }}
+            .compact-floating-container div[data-testid="column"] {{
+                padding: 0 !important;
+                margin: 0 !important;
+                flex: none !important;
+                width: auto !important;
+            }}
+            .compact-floating-container img.floating-medstar-img {{
+                width: {MEDSTAR_ICON_SIZE}px;
+                height: {MEDSTAR_ICON_SIZE}px;
+                border-radius: 50%;
+                display: block;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+                transform: rotateY(15deg) rotateX(5deg);
+                animation: float-medstar 3s ease-in-out infinite;
+                transition: transform 0.3s;
+            }}
+            .compact-floating-container img.floating-medstar-img:hover {{
+                transform: rotateY(15deg) rotateX(5deg) scale(1.1);
+            }}
+            .compact-floating-container .stButton button {{
+                background: transparent !important;
+                color: white !important;
+                border: none !important;
+                padding: 0 8px 0 2px !important;
+                font-weight: 600 !important;
+                font-size: 1.1rem !important;
+                white-space: nowrap !important;
+                box-shadow: none !important;
+                margin: 0 !important;
+                height: {MEDSTAR_ICON_SIZE}px !important;
+                line-height: {MEDSTAR_ICON_SIZE}px !important;
+                cursor: pointer !important;
+            }}
+            .compact-floating-container .stButton button:hover {{
+                background: transparent !important;
+                color: #f0f0f0 !important;
+            }}
+            @keyframes float-medstar {{
+                0% {{ transform: rotateY(15deg) rotateX(5deg) translateY(0px); }}
+                50% {{ transform: rotateY(15deg) rotateX(5deg) translateY(-4px); }}
+                100% {{ transform: rotateY(15deg) rotateX(5deg) translateY(0px); }}
+            }}
+            </style>
+            <div class="compact-floating-container">
+            """,
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns([1, 1])
+        with cols[0]:
+            if img_base64:
+                st.markdown(
+                    f'<img src="{img_base64}" class="floating-medstar-img">',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    '<span style="font-size: 40px; line-height: 50px;">🧑‍🏫</span>',
+                    unsafe_allow_html=True,
+                )
+
+        with cols[1]:
+            # 不使用 use_container_width，让按钮按内容宽度自适应，避免容器拉长
+            if st.button("和我聊聊天吧", key="general_chat_compact"):
+                st.session_state.general_chat_mode = True
+                st.session_state.previous_page = st.session_state.get("current_page", "home")
+                if st.session_state.get("current_system"):
+                    st.session_state.previous_system = st.session_state.get("current_system")
+                if st.session_state.get("current_disease"):
+                    st.session_state.previous_disease = st.session_state.get("current_disease")
+                st.rerun()
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _inject_home_global_styles(base_dir: str) -> None:
@@ -773,7 +977,9 @@ def render_home(df_mcq: pd.DataFrame, base_dir: str | None = None) -> None:
     """
     _inject_home_card_styles()
 
+    # [修改] 恢复首页标题原样
     st.markdown('<p class="pbl-home-title">⭐ 临床启明星</p>', unsafe_allow_html=True)
+
     st.markdown('<p class="pbl-home-subtitle">请选择系统开始学习</p>', unsafe_allow_html=True)
 
     # 硬编码七个系统，保证布局稳定（不再从题库动态获取）
@@ -796,6 +1002,43 @@ def render_home(df_mcq: pd.DataFrame, base_dir: str | None = None) -> None:
         st.markdown(_home_card_html(systems[5], base_dir), unsafe_allow_html=True)
     with col_mid3:
         st.markdown(_home_card_html(systems[6], base_dir), unsafe_allow_html=True)
+
+    # [修改] 首页右下角新增「⭐ 问问医小星」按钮（固定定位）
+    # 通过 marker + 相邻选择器把紧随其后的 st.button 定位并样式化，避免 DOM 嵌套不生效问题
+    st.markdown(
+        """
+        <style>
+        .ask-medstar-marker { display: none; }
+        .ask-medstar-marker + div[data-testid="stButton"] {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            z-index: 9999;
+            margin: 0 !important;
+        }
+        .ask-medstar-marker + div[data-testid="stButton"] button {
+            background-color: #0A2F6C !important;
+            color: white !important;
+            font-size: 1.2rem !important;
+            padding: 8px 16px !important;
+            border-radius: 8px !important;
+            border: none !important;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
+            transition: background-color 0.2s !important;
+            white-space: nowrap !important;
+        }
+        .ask-medstar-marker + div[data-testid="stButton"] button:hover {
+            background-color: #1E4A8C !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="ask-medstar-marker"></div>', unsafe_allow_html=True)
+    if st.button("⭐ 问问医小星", key="ask_medstar_button"):
+        st.session_state.general_chat_mode = True
+        st.session_state.previous_page = st.session_state.current_page
+        st.rerun()
 
 
 def inner_page_style() -> str:
@@ -1003,6 +1246,7 @@ def render_situation_tab(
         state["q_index"] = q_index
 
         row = df_sit.iloc[q_index]
+        explanation = row.get("解析", "")
 
         st.markdown(f'<p style="color: white !important;"><strong>当前题目：第 {q_index + 1} / {num_questions} 题</strong></p>', unsafe_allow_html=True)
         st.markdown(f'<p style="color: white !important;"><strong>阶：</strong> {row.get("阶", "")}</p>', unsafe_allow_html=True)
@@ -1118,6 +1362,11 @@ def render_situation_tab(
                     st.markdown('<p style="color: white !important;">✅ 本题已提交：<strong>回答正确</strong></p>', unsafe_allow_html=True)
                 else:
                     st.markdown('<p style="color: white !important;">❌ 本题已提交：<strong>回答错误或未判分</strong></p>', unsafe_allow_html=True)
+                if explanation and pd.notna(explanation):
+                    st.markdown(
+                        f'<p style="color: white !important; background-color: rgba(255,255,255,0.1); padding: 8px; border-radius: 4px; margin-top: 5px;"><strong>解析：</strong> {explanation}</p>',
+                        unsafe_allow_html=True,
+                    )
 
     st.markdown("---")
 
@@ -1158,7 +1407,7 @@ def render_situation_tab(
 
             if st.button("提交简答题", key=f"submit_essay_{situation_value}"):
                 score, max_score, missing = score_short_answer(
-                    user_text, df_scoring, disease, grade
+                    user_text, df_scoring, disease, grade, situation_value
                 )
                 state["essay_submitted"] = True
                 state["essay_score"] = score
@@ -1184,6 +1433,26 @@ def render_situation_tab(
                     )
                 else:
                     st.markdown('<p style="color: white !important;">✅ 简答题已提交。</p>', unsafe_allow_html=True)
+
+                # 显示参考答案（若已加载参考答案表）
+                ref_df = getattr(st.session_state, "short_answer_refs", pd.DataFrame())
+                if isinstance(ref_df, pd.DataFrame) and not ref_df.empty:
+                    mask = (
+                        ref_df["疾病"].astype(str) == str(disease)
+                    ) & (
+                        ref_df["情境"].astype(str) == str(situation_value)
+                    )
+                    mask = mask & ref_df["年级等级"].astype(str).str.contains(
+                        str(grade), na=False
+                    )
+                    matches = ref_df[mask]
+                    if not matches.empty:
+                        ref_text = matches.iloc[0].get("参考答案", "")
+                        if pd.notna(ref_text) and str(ref_text).strip():
+                            st.markdown(
+                                f'<p style="color: white !important; background-color: rgba(255,255,255,0.1); padding: 8px; border-radius: 4px; margin-top: 5px;"><strong>📖 参考答案要点：</strong> {ref_text}</p>',
+                                unsafe_allow_html=True,
+                            )
 
 
 def render_learn(
@@ -1332,22 +1601,70 @@ def score_short_answer(
     df_scoring: pd.DataFrame,
     disease: str,
     grade: str,
+    situation: Any = None,
 ) -> tuple[float, float, list[str]]:
     """
     对简答题答案进行评分。
-    返回 (得分, 总分, 漏掉的关键词列表)。
+    如果评分文件中有“情境”列，则按疾病+情境+年级筛选；
+    否则按疾病+年级筛选（兼容旧版）。
+    疾病名称会自动去除首尾的引号和空格，以便匹配。
     """
     if df_scoring is None or df_scoring.empty:
         return 0.0, 0.0, []
 
-    df_disease = df_scoring[df_scoring["疾病"].astype(str) == str(disease)]
+    def _clean_text(x: Any) -> str:
+        """
+        更强的文本标准化：
+        - 去除首尾空白与单双引号
+        - 去除常见不可见字符（BOM/零宽/软连字符等）
+        """
+        s = str(x) if x is not None else ""
+        s = s.strip().strip('"').strip("'")
+        for ch in ("\ufeff", "\u200b", "\u200c", "\u200d", "\u00ad"):
+            s = s.replace(ch, "")
+        return s.strip()
+
+    def _norm_situation(x: Any) -> str:
+        """将 1、1.0、'1 ' 等统一成 '1'，无法解析则退回清洗后的字符串。"""
+        if x is None:
+            return ""
+        try:
+            # 兼容 Excel 读取出的 float 情境（1.0）
+            return str(int(float(str(x).strip())))
+        except Exception:
+            return _clean_text(x)
+
+    # 标准化疾病名称：去除首尾的引号、空格、不可见字符
+    disease_clean = _clean_text(disease)
+
+    # 按疾病筛选（对评分表中的疾病列也做同样处理）
+    df_scoring = df_scoring.copy()
+    df_scoring["疾病_clean"] = df_scoring["疾病"].astype(str).apply(_clean_text)
+
+    df_disease = df_scoring[df_scoring["疾病_clean"] == disease_clean]
     if df_disease.empty:
         return 0.0, 0.0, []
 
+    # 再按适用年级筛选
     mask = df_disease["适用年级"].astype(str).str.contains(str(grade), na=False)
     df_grade = df_disease[mask]
     if df_grade.empty:
         return 0.0, 0.0, []
+
+    # 如果评分表中有“情境”列且传入了情境，则进一步按情境筛选（兼容 1 vs 1.0，且支持多情境如 "1,2"）
+    if "情境" in df_grade.columns and situation is not None:
+        target_sit = _norm_situation(situation)
+
+        def sit_contains(row_sit: Any) -> bool:
+            if pd.isna(row_sit):
+                return False
+            parts = str(row_sit).split(",")
+            normalized = {_norm_situation(p) for p in parts if str(p).strip() != ""}
+            return target_sit in normalized
+
+        df_grade = df_grade[df_grade["情境"].apply(sit_contains)]
+        if df_grade.empty:
+            return 0.0, 0.0, []
 
     total_score = 0.0
     max_score = 0.0
@@ -1572,15 +1889,43 @@ def _reset_simulation_state(situations: list, selected_sit) -> None:
     st.session_state.guide_in_progress = False
 
 
-def render_guide_mode() -> None:
-    """渲染医小星引导模式：独立聊天界面，返回问诊按钮，[DONE] 后显示返回。"""
+def render_guide_mode(base_dir: str) -> None:
+    """
+    渲染医小星引导模式：独立聊天界面，返回问诊按钮，[DONE] 后显示返回。
+    [修改] 增加 base_dir 参数，用于加载 MEDSTAR_ICON_FILENAME 作为 3D 医小星图标。
+    """
     st.markdown(inner_page_style(), unsafe_allow_html=True)
+
+    # ========== 加载医小星图片（用于标题和聊天头像） ==========
+    img_path = os.path.join(base_dir, "data", "images", MEDSTAR_ICON_FILENAME)
+    img_base64 = _load_image_base64(img_path)
     if st.button("🔙 返回问诊", key="back_to_patient_from_guide"):
         st.session_state.guide_mode = False
         st.rerun()
 
-    st.markdown('<h3 style="color: white !important;">🧑‍🏫 医小星引导助手</h3>', unsafe_allow_html=True)
-    st.markdown('<div style="color: white !important; font-size: 0.9rem;">根据刚才患者的回答进行思考与讨论，完成后可点击上方返回问诊。</div>', unsafe_allow_html=True)
+    if img_base64:
+        title_icon = (
+            f'<img src="{img_base64}" '
+            f'style="width: {MEDSTAR_ICON_SIZE}px; height: {MEDSTAR_ICON_SIZE}px; border-radius: 50%; '
+            f'vertical-align: middle; margin-right: 8px;">'
+        )
+        chat_avatar = (
+            f'<img src="{img_base64}" '
+            f'style="width: 30px; height: 30px; border-radius: 50%; vertical-align: middle; margin-right: 4px;">'
+        )
+    else:
+        title_icon = "🧑‍🏫"
+        chat_avatar = "🧑‍🏫"
+        st.warning("医小星图片加载失败，将使用默认 emoji")
+
+    st.markdown(
+        f'<h3 style="color: white !important;">{title_icon} 医小星引导助手</h3>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="color: white !important; font-size: 0.9rem;">根据刚才患者的回答进行思考与讨论，完成后可点击上方返回问诊。</div>',
+        unsafe_allow_html=True,
+    )
 
     # 重新开始引导按钮：清空历史并刷新页面
     if st.button("🔄 重新开始引导", key="restart_guide"):
@@ -1627,7 +1972,7 @@ def render_guide_mode() -> None:
                 st.markdown(f'<p style="color: white !important;">👨‍🎓 <strong>学生</strong>：{display_content}</p>', unsafe_allow_html=True)
         else:
             with st.chat_message("assistant"):
-                st.markdown(f'<p style="color: white !important;">🧑‍🏫 <strong>医小星</strong>：{display_content}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p style="color: white !important;">{chat_avatar} <strong>医小星</strong>：{display_content}</p>', unsafe_allow_html=True)
 
     # 检查最后一条消息是否包含 [DONE] 标记
     if st.session_state.guide_messages:
@@ -1663,21 +2008,102 @@ def render_guide_mode() -> None:
         st.rerun()
 
 
+def render_general_chat(base_dir: str) -> None:
+    """渲染通用智能问答界面，用户可问任意医学问题，AI 回答。"""
+    st.markdown(inner_page_style(), unsafe_allow_html=True)
+
+    # 加载医小星图片（用于标题与头像）
+    img_path = os.path.join(base_dir, "data", "images", MEDSTAR_ICON_FILENAME)
+    img_base64 = _load_image_base64(img_path)
+    if img_base64:
+        title_icon = (
+            f'<img src="{img_base64}" '
+            f'style="width: {MEDSTAR_ICON_SIZE}px; height: {MEDSTAR_ICON_SIZE}px; border-radius: 50%; '
+            f'vertical-align: middle; margin-right: 8px;">'
+        )
+        chat_avatar = (
+            f'<img src="{img_base64}" '
+            f'style="width: 30px; height: 30px; border-radius: 50%; vertical-align: middle; margin-right: 4px;">'
+        )
+    else:
+        title_icon = "🧑‍🏫"
+        chat_avatar = "🧑‍🏫"
+
+    # 返回按钮：回到进入前页面（默认回首页）
+    if st.button("🔙 返回", key="back_from_general"):
+        prev = st.session_state.get("general_chat_prev", {}) or {}
+        st.session_state.general_chat_mode = False
+        st.session_state.current_page = prev.get("page", "home")
+        st.session_state.current_system = prev.get("system", st.session_state.get("current_system"))
+        st.session_state.current_disease = prev.get("disease", st.session_state.get("current_disease"))
+        st.rerun()
+
+    st.markdown(
+        f'<h3 style="color: white !important;">{title_icon} 医小星智能问答</h3>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div style="color: white !important; font-size: 0.9rem;">你可以问我任何医学问题，我会尽力解答。</div>',
+        unsafe_allow_html=True,
+    )
+
+    if "general_messages" not in st.session_state or not isinstance(
+        st.session_state.general_messages, list
+    ):
+        st.session_state.general_messages = []
+
+    # 显示聊天历史
+    for msg in st.session_state.general_messages:
+        role = msg.get("role", "assistant")
+        content = msg.get("content", "")
+        if role == "user":
+            with st.chat_message("user"):
+                st.markdown(
+                    f'<p style="color: white !important;">👤 <strong>你</strong>：{content}</p>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            with st.chat_message("assistant"):
+                st.markdown(
+                    f'<p style="color: white !important;">{chat_avatar} <strong>医小星</strong>：{content}</p>',
+                    unsafe_allow_html=True,
+                )
+
+    user_input = st.chat_input("请输入你的问题...")
+    if user_input:
+        st.session_state.general_messages.append({"role": "user", "content": user_input})
+        # 将历史（不含 system）传给通用模型，保持上下文连贯
+        history = [
+            {"role": m.get("role", "user"), "content": m.get("content", "")}
+            for m in st.session_state.general_messages[-12:]
+            if m.get("role") in ("user", "assistant")
+        ]
+        ai_reply = call_general_ai(user_input, history=history)
+        st.session_state.general_messages.append({"role": "assistant", "content": ai_reply})
+        st.rerun()
+
+
 def render_patient_mode(
     situations: list,
     selected_sit,
     profile_row,
     sit_index: int,
     situation_num: int,
+    base_dir: str,
 ) -> None:
     """
     患者对话模式：顶部情景交代与「让医小星来帮帮你吧」（背景教学）；患者消息下首次症状描述显示「再让医小星来帮帮你吧」一次，
     症状分析引导完成后每条患者消息下显示「需不需要医小星再帮帮忙？」；进入下一情境与重置同情境切换。
+    [修改] 增加 base_dir 参数，用于在情景交代右侧按钮旁显示 3D 医小星图片。
     """
     if "sim_messages" not in st.session_state or not isinstance(
         st.session_state.sim_messages, list
     ):
         st.session_state.sim_messages = []
+
+    # ========== 加载医小星图片（用于顶部按钮旁图标） ==========
+    img_path = os.path.join(base_dir, "data", "images", MEDSTAR_ICON_FILENAME)
+    img_base64 = _load_image_base64(img_path)
 
     # 优先从情景交代文件读取
     scene_df = st.session_state.get("scene_narrator", pd.DataFrame())
@@ -1710,17 +2136,38 @@ def render_patient_mode(
     with col_narrator:
         st.info(f"📋 **情景交代**：{narrator_text}")
     with col_btn:
-        if not st.session_state.get("bg_guide_done", False):
-            if st.button("让医小星来帮帮你吧", key="medstar_top"):
-                st.session_state.guide_context = {
-                    "profile": profile_row,
-                    "situation": situation_num,
-                }
-                st.session_state.guide_messages = []
-                st.session_state.guide_mode = True
-                st.session_state.guide_completed = False
-                st.session_state.bg_guide_done = True
-                st.rerun()
+        # [修改] 左侧医小星图标 + 右侧「问问医小星」按钮
+        icon_html = ""
+        if img_base64:
+            icon_html = (
+                f'<img src="{img_base64}" '
+                f'style="width: {MEDSTAR_ICON_SIZE}px; height: {MEDSTAR_ICON_SIZE}px; border-radius: 50%; '
+                f'vertical-align: middle; margin-right: 6px;">'
+            )
+        else:
+            # 只警告一次，避免重复刷屏
+            if not st.session_state.get("yixiaoxing_icon_warned", False):
+                st.warning(f"未找到医小星图标：{img_path}，将使用默认 emoji。")
+                st.session_state.yixiaoxing_icon_warned = True
+
+        left, right = st.columns([1, 3])
+        with left:
+            if icon_html:
+                st.markdown(icon_html, unsafe_allow_html=True)
+            else:
+                st.markdown("🧑‍🏫")
+        with right:
+            if not st.session_state.get("bg_guide_done", False):
+                if st.button("问问医小星", key="medstar_top", use_container_width=True):
+                    st.session_state.guide_context = {
+                        "profile": profile_row,
+                        "situation": situation_num,
+                    }
+                    st.session_state.guide_messages = []
+                    st.session_state.guide_mode = True
+                    st.session_state.guide_completed = False
+                    st.session_state.bg_guide_done = True
+                    st.rerun()
 
     # 未开始时显示「开始对话」
     if not st.session_state.get("session_started", False):
@@ -1762,10 +2209,61 @@ def render_patient_mode(
                 break
         if not last_patient_msg:
             last_patient_msg = "患者还没有说话，请先开始问诊..."
+
         st.markdown("---")
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            if st.button("🧑‍🏫 需要医小星帮忙分析吗？", key="permanent_help_button", use_container_width=True):
+
+        # [修改] 底部帮助区域：使用 flex 布局，让 40px 医小星图标与按钮紧密排列
+        icon_html = (
+            f'<img src="{img_base64}" alt="医小星">'
+            if img_base64
+            else '<span style="font-size: 32px;">🧑‍🏫</span>'
+        )
+        html_content = f"""
+        <style>
+        .bottom-help {{
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 4px;
+            margin-top: 10px;
+        }}
+        .bottom-help img {{
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+        }}
+        .bottom-help button,
+        .bottom-help .stButton button {{
+            background-color: #4f8bf9 !important;
+            color: white !important;
+            border-radius: 8px !important;
+            padding: 0.5rem 1rem !important;
+            font-weight: 600 !important;
+            border: none !important;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.08) !important;
+            transition: background-color 0.2s !important;
+        }}
+        .bottom-help button:hover,
+        .bottom-help .stButton button:hover {{
+            background-color: #004999 !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.18) !important;
+        }}
+        </style>
+        <div class="bottom-help">
+            {icon_html}
+            <div>
+        """
+        st.markdown(html_content, unsafe_allow_html=True)
+
+        # 使用列只承载按钮组件，实际布局由外层 flex 容器控制
+        col_btn = st.columns([3, 1])[1]
+        with col_btn:
+            if st.button(
+                "需要我帮忙分析吗？",
+                key="permanent_help_button",
+                use_container_width=True,
+            ):
                 if last_patient_msg and "还没有说话" not in last_patient_msg:
                     st.session_state.guide_context = {
                         "patient_recent": last_patient_msg,
@@ -1777,6 +2275,8 @@ def render_patient_mode(
                     st.rerun()
                 else:
                     st.info("请先和患者对话，获取一些信息后再来找我哦～")
+
+        st.markdown("</div></div>", unsafe_allow_html=True)
 
     # 情境完成提示（放在页面最底部、重置按钮上方）
     situation_completed = False
@@ -1805,7 +2305,10 @@ def render_simulation(df_patients: pd.DataFrame) -> None:
     """
     模拟问诊页面：患者对话模式 + 医小星引导模式。
     情境切换后显示情景交代，点击「开始对话」后可问诊；每条患者消息下可「让医小星来帮帮你吧」进入引导；可进入下一情境。
+    [修改] 在调用 render_guide_mode / render_patient_mode 时传入 base_dir，用于加载 3D 医小星图片。
     """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
     st.markdown(inner_page_style(), unsafe_allow_html=True)
     st.markdown('<h1 style="color: white !important;">临床启明星 - 模拟问诊</h1>', unsafe_allow_html=True)
 
@@ -1873,10 +2376,10 @@ def render_simulation(df_patients: pd.DataFrame) -> None:
     situation_num = sit_index + 1  # 1/2/3/4
 
     if st.session_state.get("guide_mode", False):
-        render_guide_mode()
+        render_guide_mode(base_dir)
     else:
         render_patient_mode(
-            situations, selected_sit, profile_row, sit_index, situation_num
+            situations, selected_sit, profile_row, sit_index, situation_num, base_dir
         )
 
 
@@ -1905,6 +2408,56 @@ def main():
     patients_path = os.path.join(data_dir, "病人设定.xlsx")
     teaching_outlines_path = os.path.join(data_dir, "医小星教学大纲.xlsx")
 
+    # 悬浮医小星图标触发：?general_chat=true → 进入通用问答模式（优先级最高）
+    if st.query_params.get("general_chat") == "true":
+        st.session_state.general_chat_prev = {
+            "page": st.session_state.get("current_page", "home"),
+            "system": st.session_state.get("current_system"),
+            "disease": st.session_state.get("current_disease"),
+        }
+        # 兼容性：按指令额外保存 previous_* 字段
+        st.session_state.previous_page = st.session_state.get("current_page", "home")
+        st.session_state.previous_system = st.session_state.get("current_system")
+        st.session_state.previous_disease = st.session_state.get("current_disease")
+        st.session_state.general_chat_mode = True
+        st.session_state.current_page = "general_chat"
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.rerun()
+
+    # 悬浮医小星图标触发：?guide=true → 进入引导模式（优先级高于 ?system）
+    if st.query_params.get("guide") == "true":
+        st.session_state.guide_mode = True
+        patient_msg = st.query_params.get("msg", "你好，医小星，我想了解一下医学知识。")
+        dummy_profile = pd.Series(
+            {
+                "疾病": "通用咨询",
+                "年龄": "通用",
+                "性别": "通用",
+                "阶段描述": "通用咨询",
+                "症状": "无",
+                "体征": "无",
+                "辅助检查": "无",
+                "既往史": "无",
+                "性格": "温和",
+                "对话风格": "鼓励、亲切",
+                "当前认知": "想了解医学知识",
+                "关心问题": "医学知识",
+            }
+        )
+        st.session_state.guide_context = {
+            "patient_recent": patient_msg,
+            "profile": dummy_profile,
+            "situation": 1,
+        }
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.rerun()
+
     # 首页环形卡片点击通过 ?system=xxx 跳转：读到参数后写入 session、清除 URL 并 rerun
     if st.query_params.get("system"):
         st.session_state.current_system = st.query_params.get("system")
@@ -1919,6 +2472,9 @@ def main():
 
     # 按当前页面与系统注入背景与全局样式（首页用 data/background.jpg，内页用 data/backgrounds/{系统}.jpg）
     _inject_page_background(base_dir, st.session_state.current_page, st.session_state.get("current_system"))
+
+    # [修改] 移除右下角悬浮按钮（改为首页标题按钮入口）
+    # inject_floating_icon(base_dir)
 
     # 加载数据（若文件缺失将在对应函数中停止运行）
     df_mcq = load_mcq_bank(mcq_path)
@@ -1935,9 +2491,21 @@ def main():
     df_scene = load_scene_narrator(scene_narrator_path)
     st.session_state.scene_narrator = df_scene
 
+    # 加载简答题参考答案
+    ref_path = os.path.join(data_dir, "简答题参考答案.xlsx")
+    if os.path.exists(ref_path):
+        df_ref = pd.read_excel(ref_path)
+        st.session_state.short_answer_refs = df_ref
+    else:
+        st.warning("未找到简答题参考答案文件，将不会显示参考答案。")
+        st.session_state.short_answer_refs = pd.DataFrame()
+
     # 页面导航
     page = st.session_state.current_page
-    if page == "home":
+    if st.session_state.get("general_chat_mode", False) or page == "general_chat":
+        render_general_chat(base_dir)
+        return
+    elif page == "home":
         render_home(df_mcq, base_dir)
     elif page == "diseases":
         render_diseases(df_mcq)
