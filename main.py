@@ -1049,6 +1049,11 @@ def inner_page_style() -> str:
     .stApp, .stMarkdown, p, h1, h2, h3, h4, h5, h6, div, span, label, .stChatMessage, .stSelectbox, .stRadio, .stButton button {
         color: #ffffff !important;
     }
+    /* 放大内页整体文字 */
+    main .block-container,
+    main .block-container * {
+        font-size: 1.2rem !important;
+    }
     /* 背景色 */
     .stApp {
         background-color: #1e1e1e;
@@ -1058,6 +1063,7 @@ def inner_page_style() -> str:
         background-color: #2d2d2d !important;
         color: white !important;
         border-color: #444 !important;
+        font-size: 1.2rem !important;
     }
     /* 按钮背景色（可自定义） */
     .stButton button {
@@ -1066,6 +1072,16 @@ def inner_page_style() -> str:
     }
     .stButton button:hover {
         background-color: #004999 !important;
+    }
+    /* 内页标题字号调整，更醒目 */
+    h1 {
+        font-size: 2.5rem !important;
+    }
+    h2 {
+        font-size: 2rem !important;
+    }
+    h3 {
+        font-size: 1.8rem !important;
     }
     /* 卡片、展开器等保持半透明背景 */
     .stExpander, .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
