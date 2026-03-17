@@ -1114,6 +1114,10 @@ def inner_page_style() -> str:
     """返回内页（疾病/学习/报告/模拟问诊）使用的深色背景+白字 CSS，首页不调用以保持原样。"""
     return """
 <style>
+    /* 移动端触摸优化：全局 touch-action，减少点击延迟 */
+    * {
+        touch-action: manipulation;
+    }
     /* 内页全局文字白色 */
     .stApp, .stMarkdown, p, h1, h2, h3, h4, h5, h6, div, span, label, .stChatMessage, .stSelectbox, .stRadio, .stButton button {
         color: #ffffff !important;
@@ -1171,7 +1175,6 @@ def inner_page_style() -> str:
         padding: 10px 15px;
         font-size: 16px !important;
         cursor: pointer;
-        touch-action: manipulation;
         -webkit-tap-highlight-color: transparent;
     }
     /* 触摸反馈 */
@@ -2483,6 +2486,29 @@ def main():
             "Report a bug": None,
             "About": None,
         },
+    )
+
+    # [修改] 注入 PWA 相关的 HTML 头部信息与 Service Worker 注册脚本，支持手机端安装到主屏幕
+    st.markdown(
+        """
+        <link rel="manifest" href="/manifest.json">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+        <meta name="apple-mobile-web-app-title" content="临床启明星">
+        <meta name="theme-color" content="#0A2F6C">
+        <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', function() {
+                navigator.serviceWorker.register('/service-worker.js').then(function(registration) {
+                    console.log('ServiceWorker注册成功：', registration.scope);
+                }, function(err) {
+                    console.log('ServiceWorker注册失败：', err);
+                });
+            });
+        }
+        </script>
+        """,
+        unsafe_allow_html=True,
     )
 
     # 计算数据文件路径（使用 os.path 保证跨平台）

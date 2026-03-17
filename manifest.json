@@ -1,0 +1,21 @@
+{
+    "name": "临床启明星",
+    "short_name": "启明星",
+    "description": "PBL医学学习助手",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0A2F6C",
+    "theme_color": "#0A2F6C",
+    "icons": [
+        {
+            "src": "data/images/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "data/images/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}
