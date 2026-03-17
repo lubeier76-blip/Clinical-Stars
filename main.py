@@ -953,6 +953,35 @@ def _inject_home_card_styles() -> None:
             margin: 0 auto;
             border-radius: 50%;
         }
+        /* 首页系统卡片按钮样式（使用 Streamlit 按钮实现） */
+        .home-system-button .stButton button {
+            background: rgba(255,255,255,0.92) !important;
+            color: #2c3e50 !important;
+            border-radius: 16px !important;
+            padding: 1.5rem 0.5rem !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+            border: none !important;
+            font-weight: 700 !important;
+            font-size: 1.2rem !important;
+            line-height: 1.4 !important;
+            height: auto !important;
+            white-space: normal !important;
+            transition: transform 0.2s, box-shadow 0.2s !important;
+        }
+        .home-system-button .stButton button:hover {
+            transform: scale(1.02) !important;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.15) !important;
+        }
+        /* 移动端触摸优化：增大点击区域，去掉高亮 */
+        .home-system-button .stButton button {
+            min-height: 100px !important;
+            touch-action: manipulation !important;
+            -webkit-tap-highlight-color: transparent !important;
+        }
+        .home-system-button .stButton button:active {
+            opacity: 0.8 !important;
+            transform: scale(0.98) !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -964,7 +993,8 @@ def _home_card_html(system_name: str, base_dir: str | None) -> str:
     icon = _system_emoji(system_name, base_dir)
     q = quote(system_name)
     return (
-        f'<a href="?system={q}" class="pbl-home-card">'
+        f'<a href="?system={q}" class="pbl-home-card" '
+        f'style="-webkit-tap-highlight-color: transparent; touch-action: manipulation;">'
         f'<span class="pbl-home-card-icon">{icon}</span>'
         f'<span class="pbl-home-card-name">{system_name}</span></a>'
     )
@@ -988,20 +1018,59 @@ def render_home(df_mcq: pd.DataFrame, base_dir: str | None = None) -> None:
         "消化系统", "神经精神", "骨科",
     ]
 
-    # 第一行：st.columns(4)，四个卡片（HTML 链接，图标可为 emoji 或 img）
+    # 第一行：st.columns(4)，四个系统按钮（使用原生按钮，移动端点击更可靠）
     cols_top = st.columns(4)
     for i, sys in enumerate(systems[:4]):
         with cols_top[i]:
-            st.markdown(_home_card_html(sys, base_dir), unsafe_allow_html=True)
+            with st.container():
+                st.markdown('<div class="home-system-button">', unsafe_allow_html=True)
+                label = f"{_system_emoji(sys, base_dir)}\n\n{sys}"
+                if st.button(label, key=f"home_sys_{sys}", use_container_width=True):
+                    st.session_state.current_system = sys
+                    st.session_state.current_page = "diseases"
+                    st.session_state.current_disease = None
+                    st.session_state.situation_state = {}
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    # 第二行：st.columns([1,1,1,1,1])，中间三列放卡片，左右留白居中
+    # 第二行：中间三列系统按钮，左右留白使其居中
     col_left, col_mid1, col_mid2, col_mid3, col_right = st.columns([1, 1, 1, 1, 1])
     with col_mid1:
-        st.markdown(_home_card_html(systems[4], base_dir), unsafe_allow_html=True)
+        sys = systems[4]
+        with st.container():
+            st.markdown('<div class="home-system-button">', unsafe_allow_html=True)
+            label = f"{_system_emoji(sys, base_dir)}\n\n{sys}"
+            if st.button(label, key=f"home_sys_{sys}", use_container_width=True):
+                st.session_state.current_system = sys
+                st.session_state.current_page = "diseases"
+                st.session_state.current_disease = None
+                st.session_state.situation_state = {}
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
     with col_mid2:
-        st.markdown(_home_card_html(systems[5], base_dir), unsafe_allow_html=True)
+        sys = systems[5]
+        with st.container():
+            st.markdown('<div class="home-system-button">', unsafe_allow_html=True)
+            label = f"{_system_emoji(sys, base_dir)}\n\n{sys}"
+            if st.button(label, key=f"home_sys_{sys}", use_container_width=True):
+                st.session_state.current_system = sys
+                st.session_state.current_page = "diseases"
+                st.session_state.current_disease = None
+                st.session_state.situation_state = {}
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
     with col_mid3:
-        st.markdown(_home_card_html(systems[6], base_dir), unsafe_allow_html=True)
+        sys = systems[6]
+        with st.container():
+            st.markdown('<div class="home-system-button">', unsafe_allow_html=True)
+            label = f"{_system_emoji(sys, base_dir)}\n\n{sys}"
+            if st.button(label, key=f"home_sys_{sys}", use_container_width=True):
+                st.session_state.current_system = sys
+                st.session_state.current_page = "diseases"
+                st.session_state.current_disease = None
+                st.session_state.situation_state = {}
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     # [修改] 首页右下角新增「⭐ 问问医小星」按钮（固定定位）
     # 通过 marker + 相邻选择器把紧随其后的 st.button 定位并样式化，避免 DOM 嵌套不生效问题
@@ -1102,7 +1171,8 @@ def inner_page_style() -> str:
         padding: 10px 15px;
         font-size: 16px !important;
         cursor: pointer;
-        -webkit-tap-highlight-color: rgba(0,0,0,0.1);
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
     }
     /* 触摸反馈 */
     .stButton button:active {
@@ -1166,11 +1236,15 @@ def render_diseases(df_mcq: pd.DataFrame) -> None:
             col1, col2 = st.columns(2, gap="small")
             with col1:
                 if st.button("开始学习", key=f"learn_{disease}", use_container_width=True):
+                    # 调试：确认点击被捕获
+                    st.write(f"点击了开始学习: {disease}")
                     st.session_state.current_disease = disease
                     st.session_state.situation_state = {}
                     go_learn()
             with col2:
                 if st.button("模拟问诊", key=f"sim_{disease}", use_container_width=True):
+                    # 调试：确认点击被捕获
+                    st.write(f"点击了模拟问诊: {disease}")
                     st.session_state.current_disease = disease
                     st.session_state.current_page = "simulation"
                     st.rerun()
