@@ -1131,12 +1131,21 @@ def inner_page_style() -> str:
     .stApp {
         background-color: #1e1e1e;
     }
-    /* 输入框、文本区域、选择框背景调暗 */
-    input, textarea, .stSelectbox div[data-baseweb="select"] > div, .stTextInput input, .stNumberInput input {
+    /* 输入框、文本区域背景调暗；选择框主体单独在后面覆盖为白底黑字 */
+    input, textarea, .stTextInput input, .stNumberInput input {
         background-color: #2d2d2d !important;
         color: white !important;
         border-color: #444 !important;
         font-size: 1.2rem !important;
+    }
+    /* 全局下拉框主体：白底黑字（解决白底白字问题） */
+    .stSelectbox div[data-baseweb="select"] > div {
+        background-color: white !important;
+        color: black !important;
+        border-color: #cccccc !important;
+    }
+    .stSelectbox div[data-baseweb="select"] span {
+        color: black !important;
     }
     /* 按钮背景色（可自定义） */
     .stButton button {
@@ -1186,6 +1195,14 @@ def inner_page_style() -> str:
     .stButton {
         z-index: 10;
         position: relative;
+    }
+    /* 全局下拉列表选项：统一黑字白底，避免白底白字 */
+    ul[role="listbox"] {
+        background-color: #ffffff !important;
+    }
+    ul[role="listbox"] li,
+    ul[role="listbox"] li * {
+        color: #000000 !important;
     }
     /* 禁用任何可能遮挡点击的父容器（若有自定义卡片） */
     .stApp [data-testid="stVerticalBlock"] {
@@ -2447,10 +2464,12 @@ def render_simulation(df_patients: pd.DataFrame) -> None:
     if default_sit not in situations:
         default_sit = situations[0]
 
-    selected_sit = st.selectbox(
+    # [修改] 情境切换方式改为按钮式单选（类似学习页的年级切换），提升可见性与可点性
+    selected_sit = st.radio(
         "请选择情境编号",
         options=situations,
         index=situations.index(default_sit),
+        horizontal=True,
         key="simulation_situation_selector",
     )
 
