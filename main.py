@@ -111,6 +111,33 @@ def load_teaching_outlines(path: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data
+def load_case_outlines(path: str) -> pd.DataFrame:
+    """加载医小星深度精讲表 `data/疾病精讲.xlsx`（系统、疾病、步骤与提示词模板）。"""
+    if not os.path.exists(path):
+        st.error(f"未找到医小星深度精讲配置文件：{path}")
+        st.stop()
+    try:
+        df = pd.read_excel(path)
+        df.columns = df.columns.str.strip()
+        required_cols = ["系统", "疾病", "步骤序号", "步骤名称", "讲解提示词模板"]
+        for col in required_cols:
+            if col not in df.columns:
+                st.error(f"配置文件缺少列：{col}")
+                st.stop()
+        # 规范化文本列，避免 Excel 数字/空格导致筛选与 session 不一致（如 42 疾病 × 多步）
+        for c in ("系统", "疾病", "步骤名称", "讲解提示词模板"):
+            if c in df.columns:
+                df[c] = df[c].apply(lambda x: str(x).strip() if pd.notna(x) else "")
+        if "步骤序号" in df.columns:
+            df["步骤序号"] = pd.to_numeric(df["步骤序号"], errors="coerce")
+        df = df.dropna(subset=["步骤序号"])
+        return df
+    except Exception as e:
+        st.error(f"加载配置文件出错：{e}")
+        st.stop()
+
+
 def call_ai_patient(messages, profile):
     """使用 DeepSeek API 生成 AI 患者回复"""
     api_key = DEEPSEEK_API_KEY
@@ -639,7 +666,8 @@ MEDSTAR_ICON_SIZE = 50  # 图标显示尺寸（像素）
 def _inject_page_background(base_dir: str, page: str, system: str | None) -> None:
     """
     [修改] 根据当前页面与系统注入背景样式，同时强制内页所有普通文字为白色，按钮等交互元素保持深色。
-    首页用 data/background.jpg，内页用 data/backgrounds/{系统拼音}.jpg。
+    首页用 data/background.jpg；问问医小星 / 医小星深度精讲用 data/background1.1.jpg；
+    其它内页用 data/backgrounds/{系统拼音}.jpg 或 background2/。
     回退顺序：系统背景图 → 首页背景图 → 渐变。
     """
     data_dir = os.path.join(base_dir, "data")
@@ -658,8 +686,13 @@ def _inject_page_background(base_dir: str, page: str, system: str | None) -> Non
         except Exception:
             return ""
 
+    medstar_feature_bg = os.path.join(data_dir, "background1.1.jpg")
+
     if page == "home":
         bg_css = try_load_b64(home_bg) or gradient_css
+    elif page in ("general_chat", "case_list", "case_tutorial"):
+        # 问问医小星（通用问答）、医小星深度精讲列表/详情：统一使用专用背景图
+        bg_css = try_load_b64(medstar_feature_bg) or try_load_b64(home_bg) or gradient_css
     else:
         # [修改] 内页：按页面类型选择背景图文件夹
         # - diseases：只从 data/backgrounds/ 加载
@@ -1072,20 +1105,29 @@ def render_home(df_mcq: pd.DataFrame, base_dir: str | None = None) -> None:
                 st.rerun()
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # [修改] 首页右下角新增「⭐ 问问医小星」按钮（固定定位）
-    # 通过 marker + 相邻选择器把紧随其后的 st.button 定位并样式化，避免 DOM 嵌套不生效问题
+    # 首页右下角固定按钮（marker + 相邻兄弟选择器；顺序：上→下 问问医小星 / 深度精讲 / 联系我们）
     st.markdown(
         """
         <style>
-        .ask-medstar-marker { display: none; }
-        .ask-medstar-marker + div[data-testid="stButton"] {
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
-            z-index: 9999;
+        .home-fixed-buttons-marker { display: none !important; }
+        .home-fixed-buttons-marker + div[data-testid="stButton"],
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"],
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] + div[data-testid="stButton"] {
+            position: fixed !important;
+            right: 30px !important;
+            z-index: 9999 !important;
             margin: 0 !important;
         }
-        .ask-medstar-marker + div[data-testid="stButton"] button {
+        .home-fixed-buttons-marker + div[data-testid="stButton"] { bottom: 130px !important; }
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] {
+            bottom: 80px !important;
+        }
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] + div[data-testid="stButton"] {
+            bottom: 30px !important;
+        }
+        .home-fixed-buttons-marker + div[data-testid="stButton"] button,
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] button,
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] + div[data-testid="stButton"] button {
             background-color: #0A2F6C !important;
             color: white !important;
             font-size: 1.2rem !important;
@@ -1095,18 +1137,28 @@ def render_home(df_mcq: pd.DataFrame, base_dir: str | None = None) -> None:
             box-shadow: 0 2px 8px rgba(0,0,0,0.2) !important;
             transition: background-color 0.2s !important;
             white-space: nowrap !important;
+            width: auto !important;
         }
-        .ask-medstar-marker + div[data-testid="stButton"] button:hover {
+        .home-fixed-buttons-marker + div[data-testid="stButton"] button:hover,
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] button:hover,
+        .home-fixed-buttons-marker + div[data-testid="stButton"] + div[data-testid="stButton"] + div[data-testid="stButton"] button:hover {
             background-color: #1E4A8C !important;
         }
         </style>
+        <div class="home-fixed-buttons-marker"></div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="ask-medstar-marker"></div>', unsafe_allow_html=True)
     if st.button("⭐ 问问医小星", key="ask_medstar_button"):
         st.session_state.general_chat_mode = True
         st.session_state.previous_page = st.session_state.current_page
+        st.rerun()
+    if st.button("✨ 医小星深度精讲", key="case_list_button"):
+        st.session_state.current_page = "case_list"
+        st.rerun()
+    # 第三个按钮：联系我们（跳转独立页面）
+    if st.button("📧 联系我们", key="contact_us_button"):
+        st.session_state.current_page = "contact"
         st.rerun()
 
 
@@ -1970,6 +2022,267 @@ def render_report(
             )
 
 
+def render_contact_page(base_dir: str):
+    """联系我们页面"""
+    # 加载背景图片
+    bg_path = os.path.join(base_dir, "data", "emailbackground.jpg")
+    bg_base64 = ""
+    if os.path.exists(bg_path):
+        try:
+            with open(bg_path, "rb") as f:
+                bg_base64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            pass
+
+    # 注入背景样式（覆盖内页默认背景）
+    bg_css = ""
+    if bg_base64:
+        bg_css = f"background-image: url(data:image/jpeg;base64,{bg_base64}); background-size: cover; background-repeat: no-repeat; background-position: center; background-attachment: fixed;"
+    else:
+        bg_css = "background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);"
+
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            {bg_css}
+        }}
+        .contact-page-title {{
+            color: #ffffff !important;
+            text-align: center !important;
+            text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+        }}
+        /* 确保内页内容区文字白色 */
+        main .block-container,
+        main .block-container * {{
+            color: white !important;
+        }}
+        /* 按钮等交互元素颜色恢复深色 */
+        main .block-container button,
+        main .block-container .stButton button,
+        main .block-container input,
+        main .block-container textarea {{
+            color: #2c3e50 !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown('<h1 class="contact-page-title">📬 联系我们</h1>', unsafe_allow_html=True)
+
+    # 返回首页按钮（居中）
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🏠 返回首页", use_container_width=True):
+            st.session_state.current_page = "home"
+            st.rerun()
+
+    # 流星雨特效
+    st.markdown(
+        """
+        <style>
+        .meteor-container {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+        .meteor {
+            position: absolute;
+            width: 2px;
+            height: 90px;
+            background: linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0));
+            transform: rotate(35deg);
+            filter: drop-shadow(0 0 6px rgba(255,255,255,0.8));
+            animation: meteor-fall linear infinite;
+        }
+        @keyframes meteor-fall {
+            0% {
+                transform: translate(0, 0) rotate(35deg);
+                opacity: 0;
+            }
+            10% { opacity: 1; }
+            100% {
+                transform: translate(-420px, 620px) rotate(35deg);
+                opacity: 0;
+            }
+        }
+        </style>
+        <div class="meteor-container">
+            <span class="meteor" style="left: 92%; top: 4%; animation-duration: 3.6s; animation-delay: 0s;"></span>
+            <span class="meteor" style="left: 80%; top: 12%; animation-duration: 4.2s; animation-delay: 0.8s;"></span>
+            <span class="meteor" style="left: 70%; top: 2%; animation-duration: 3.2s; animation-delay: 1.6s;"></span>
+            <span class="meteor" style="left: 60%; top: 16%; animation-duration: 4.8s; animation-delay: 2.1s;"></span>
+            <span class="meteor" style="left: 50%; top: 6%; animation-duration: 3.9s; animation-delay: 2.7s;"></span>
+            <span class="meteor" style="left: 40%; top: 10%; animation-duration: 4.5s; animation-delay: 3.4s;"></span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 白色文字，居中显示（无容器）
+    st.markdown(
+        """
+        <div style="text-align: center; font-size: 1.2rem; margin-top: 40px; color: white;">
+            <p>感谢您对临床启明星的关注与支持！</p>
+            <p>如果您希望学习某个疾病，或对我们的平台有任何建议，</p>
+            <p>欢迎通过以下邮箱联系我们：</p>
+            <p style="font-size: 1.5rem; font-weight: bold; margin: 1.5rem 0; color: white;">📧 1360557120@qq.com</p>
+            <p>我们会认真阅读每一封来信，不断优化平台！</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_case_list(df_case: pd.DataFrame):
+    st.markdown(inner_page_style(), unsafe_allow_html=True)
+    st.markdown('<h1 style="color: white !important;">✨ 医小星深度精讲</h1>', unsafe_allow_html=True)
+
+    if st.button("🔙 返回首页", key="back_home_case_list"):
+        st.session_state.current_page = "home"
+        st.rerun()
+
+    st.markdown("### 请选择一个疾病，医小星将带你层层深入")
+
+    systems = df_case["系统"].unique()
+    for sys in systems:
+        st.markdown(f"#### {sys}")
+        diseases = df_case[df_case["系统"] == sys]["疾病"].unique()
+        if len(diseases) == 0:
+            continue
+        cols = st.columns(min(len(diseases), 3))
+        for idx, disease in enumerate(diseases):
+            with cols[idx % 3]:
+                if st.button(f"{disease}", key=f"case_{sys}_{disease}", use_container_width=True):
+                    st.session_state.case_disease = disease
+                    st.session_state.case_system = sys
+                    st.session_state.case_step_idx = 0
+                    st.session_state.case_messages = []
+                    st.session_state.case_completed_steps = set()
+                    st.session_state.current_page = "case_tutorial"
+                    st.rerun()
+        st.markdown("---")
+
+
+def render_case_tutorial(df_case: pd.DataFrame, base_dir: str):
+    st.markdown(inner_page_style(), unsafe_allow_html=True)
+    disease = str(st.session_state.get("case_disease", "") or "").strip()
+    system = str(st.session_state.get("case_system", "") or "").strip()
+
+    # 加载医小星图片
+    img_path = os.path.join(base_dir, "data", "images", MEDSTAR_ICON_FILENAME)
+    img_base64 = _load_image_base64(img_path)
+    if img_base64:
+        title_icon = (
+            f'<img src="{img_base64}" style="width: {MEDSTAR_ICON_SIZE}px; height: {MEDSTAR_ICON_SIZE}px; '
+            'border-radius: 50%; vertical-align: middle; margin-right: 8px;">'
+        )
+        chat_avatar = (
+            f'<img src="{img_base64}" style="width: 30px; height: 30px; border-radius: 50%; '
+            'vertical-align: middle; margin-right: 4px;">'
+        )
+    else:
+        title_icon = "🧑‍🏫"
+        chat_avatar = "🧑‍🏫"
+
+    st.markdown(
+        f'<h1 style="color: white !important;">{title_icon} {disease}深度精讲</h1>',
+        unsafe_allow_html=True,
+    )
+
+    if st.button("🔙 返回精讲列表", key="back_to_case_list"):
+        st.session_state.current_page = "case_list"
+        st.rerun()
+
+    steps_df = df_case[(df_case["疾病"] == disease) & (df_case["系统"] == system)].sort_values(
+        "步骤序号"
+    )
+    if steps_df.empty:
+        st.error("未找到该疾病的精讲配置")
+        return
+
+    if "case_step_idx" not in st.session_state:
+        st.session_state.case_step_idx = 0
+    if "case_messages" not in st.session_state:
+        st.session_state.case_messages = []
+    if "case_completed_steps" not in st.session_state:
+        st.session_state.case_completed_steps = set()
+
+    total_steps = len(steps_df)
+
+    if st.session_state.case_step_idx == 0:
+        st.markdown("### 👋 欢迎来到医小星深度精讲")
+        st.markdown(
+            f"我们将一步步深入讲解 **{disease}** 的病因、病理、诊疗和康复。\n\n"
+            "点击下方按钮开始学习，过程中你可以随时提问。"
+        )
+        if st.button("开始学习", key="start_case"):
+            st.session_state.case_step_idx = 1
+            st.rerun()
+        return
+
+    current_step = steps_df.iloc[st.session_state.case_step_idx - 1]
+    step_num = current_step["步骤序号"]
+    step_name = current_step["步骤名称"]
+    prompt_template = current_step["讲解提示词模板"]
+
+    step_icon = chat_avatar if img_base64 else "🧑‍🏫"
+    st.markdown(f"### {step_icon} 第{step_num}步：{step_name}", unsafe_allow_html=True)
+
+    for msg in st.session_state.case_messages:
+        if msg["role"] == "assistant":
+            with st.chat_message("assistant"):
+                st.markdown(f'{chat_avatar} {msg["content"]}', unsafe_allow_html=True)
+        else:
+            with st.chat_message("user"):
+                st.markdown(msg["content"])
+
+    if step_num not in st.session_state.case_completed_steps:
+        prompt = str(prompt_template).replace("{疾病}", disease)
+        reply = call_general_ai(prompt)
+        st.session_state.case_messages.append({"role": "assistant", "content": reply, "step": step_num})
+        st.session_state.case_completed_steps.add(step_num)
+        st.rerun()
+
+    user_input = st.chat_input("你可以提问或回答上面的问题...")
+    if user_input:
+        st.session_state.case_messages.append({"role": "user", "content": user_input})
+        feedback_prompt = (
+            f"基于当前教学内容和学生的问题/回答：{user_input}，请你作为医小星给予反馈，并继续引导学习。"
+            "如果学生回答正确，表扬并建议进入下一步；如果错误，解释后再问一次。"
+        )
+        hist = [{"role": m["role"], "content": m["content"]} for m in st.session_state.case_messages[-10:]]
+        reply = call_general_ai(feedback_prompt, history=hist)
+        st.session_state.case_messages.append({"role": "assistant", "content": reply})
+        st.rerun()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("➡️ 下一步", key="next_step"):
+            if st.session_state.case_step_idx < total_steps:
+                st.session_state.case_step_idx += 1
+                st.rerun()
+    with col2:
+        if st.button("🔁 重新开始", key="restart_case"):
+            st.session_state.case_step_idx = 0
+            st.session_state.case_messages = []
+            st.session_state.case_completed_steps = set()
+            st.rerun()
+
+    if st.session_state.case_step_idx == total_steps:
+        st.info("🎉 恭喜你完成了所有步骤！")
+        if st.button("📄 生成学习小结", key="gen_summary"):
+            summary_prompt = str(steps_df.iloc[-1]["讲解提示词模板"]).replace("{疾病}", disease)
+            summary = call_general_ai(summary_prompt)
+            st.session_state.case_messages.append(
+                {"role": "assistant", "content": f"**学习小结**\n\n{summary}"}
+            )
+            st.rerun()
+
+
 # 医小星情景交代消息（仅背景与已有检查结果，不包含症状描述；症状由患者在对话中说出）
 NARRATOR_MESSAGES: dict[int, str] = {
     0: "张先生，49岁，保险公司经理，有长期吸烟饮酒史，高血压病史5年未规律服药。今天早上被家属送来医院。你是接诊医生，请开始问诊。",
@@ -2605,8 +2918,11 @@ def main():
             pass
         st.rerun()
 
-    # 按当前页面与系统注入背景与全局样式（首页用 data/background.jpg，内页用 data/backgrounds/{系统}.jpg）
-    _inject_page_background(base_dir, st.session_state.current_page, st.session_state.get("current_system"))
+    # 按当前页面与系统注入背景（问问医小星开启时 current_page 可能仍为 home，需单独映射）
+    page_for_bg = st.session_state.current_page
+    if st.session_state.get("general_chat_mode", False) or page_for_bg == "general_chat":
+        page_for_bg = "general_chat"
+    _inject_page_background(base_dir, page_for_bg, st.session_state.get("current_system"))
 
     # [修改] 移除右下角悬浮按钮（改为首页标题按钮入口）
     # inject_floating_icon(base_dir)
@@ -2617,6 +2933,8 @@ def main():
     df_scoring = load_short_question_scoring(scoring_path)
     df_patients = load_patient_profiles(patients_path)
     df_teaching_outlines = load_teaching_outlines(teaching_outlines_path)
+    case_path = os.path.join(data_dir, "疾病精讲.xlsx")
+    df_case = load_case_outlines(case_path)
 
     # 将教学大纲表放入 session_state，供 call_medstar 随时读取
     st.session_state.teaching_outlines = df_teaching_outlines
@@ -2650,6 +2968,12 @@ def main():
         render_report(df_mcq, df_short_q, df_scoring)
     elif page == "simulation":
         render_simulation(df_patients)
+    elif page == "case_list":
+        render_case_list(df_case)
+    elif page == "case_tutorial":
+        render_case_tutorial(df_case, base_dir)
+    elif page == "contact":
+        render_contact_page(base_dir)
     else:
         # 兜底：未知页面时回到首页
         st.session_state.current_page = "home"
